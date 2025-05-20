@@ -1,110 +1,187 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
+import { toast } from 'sonner';
+import { supabase } from '../lib/supabase';
 import { ExperimentType, ExperimentStep } from '../types';
 
 interface ExperimentContextType {
   experiments: ExperimentType[];
   currentExperiment: ExperimentType | null;
-  addExperiment: (experiment: ExperimentType) => void;
-  updateExperiment: (id: string, experiment: Partial<ExperimentType>) => void;
-  getExperiment: (id: string) => ExperimentType | undefined;
-  setCurrentExperiment: (id: string) => void;
-  completeStep: (experimentId: string, stepIndex: number) => void;
-  deleteExperiment: (id: string) => void;
+  addExperiment: (experiment: Omit<ExperimentType, 'id'>) => Promise<string>;
+  updateExperiment: (id: string, experiment: Partial<ExperimentType>) => Promise<void>;
+  getExperiment: (id: string) => Promise<ExperimentType | undefined>;
+  setCurrentExperiment: (id: string) => Promise<void>;
+  completeStep: (experimentId: string, stepIndex: number) => Promise<void>;
+  deleteExperiment: (id: string) => Promise<void>;
+  loading: boolean;
 }
 
 const ExperimentContext = createContext<ExperimentContextType | undefined>(undefined);
 
 export const ExperimentProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [experiments, setExperiments] = useState<ExperimentType[]>(() => {
-    const savedExperiments = localStorage.getItem('experiments');
-    return savedExperiments ? JSON.parse(savedExperiments) : [];
-  });
-  
+  const [experiments, setExperiments] = useState<ExperimentType[]>([]);
   const [currentExperiment, setCurrentExperimentState] = useState<ExperimentType | null>(null);
+  const [loading, setLoading] = useState(true);
 
+  // Load experiments on mount
   useEffect(() => {
-    localStorage.setItem('experiments', JSON.stringify(experiments));
-  }, [experiments]);
+    loadExperiments();
+  }, []);
 
-  const addExperiment = (experiment: ExperimentType) => {
-    setExperiments([...experiments, experiment]);
-  };
+  async function loadExperiments() {
+    try {
+      const { data: experiments, error } = await supabase
+        .from('experiments')
+        .select(`
+          *,
+          experiment_steps (*)
+        `)
+        .order('created_at', { ascending: false });
 
-  const updateExperiment = (id: string, experimentUpdates: Partial<ExperimentType>) => {
-    setExperiments(
-      experiments.map((exp) => 
-        exp.id === id ? { ...exp, ...experimentUpdates } : exp
-      )
-    );
-    
-    // Update current experiment if it's the one being updated
-    if (currentExperiment?.id === id) {
-      setCurrentExperimentState({
-        ...currentExperiment,
-        ...experimentUpdates,
-      });
+      if (error) throw error;
+
+      setExperiments(experiments || []);
+    } catch (error: any) {
+      toast.error('Failed to load experiments');
+      console.error('Error loading experiments:', error);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  const addExperiment = async (experiment: Omit<ExperimentType, 'id'>): Promise<string> => {
+    try {
+      const { data, error } = await supabase
+        .from('experiments')
+        .insert([{
+          title: experiment.title,
+          description: experiment.description,
+          protocol_file: experiment.protocolFile,
+          progress: 0
+        }])
+        .select()
+        .single();
+
+      if (error) throw error;
+
+      const experimentId = data.id;
+
+      // Insert steps
+      const { error: stepsError } = await supabase
+        .from('experiment_steps')
+        .insert(
+          experiment.steps.map(step => ({
+            experiment_id: experimentId,
+            description: step.description,
+            estimated_duration: step.estimatedDuration,
+            scheduled_time: step.scheduledTime
+          }))
+        );
+
+      if (stepsError) throw stepsError;
+
+      await loadExperiments();
+      return experimentId;
+    } catch (error: any) {
+      toast.error('Failed to create experiment');
+      throw error;
     }
   };
 
-  const getExperiment = (id: string) => {
-    return experiments.find((exp) => exp.id === id);
+  const updateExperiment = async (id: string, experimentUpdates: Partial<ExperimentType>) => {
+    try {
+      const { error } = await supabase
+        .from('experiments')
+        .update(experimentUpdates)
+        .eq('id', id);
+
+      if (error) throw error;
+
+      await loadExperiments();
+    } catch (error: any) {
+      toast.error('Failed to update experiment');
+      throw error;
+    }
   };
 
-  const setCurrentExperiment = (id: string) => {
-    const experiment = getExperiment(id);
+  const getExperiment = async (id: string) => {
+    try {
+      const { data, error } = await supabase
+        .from('experiments')
+        .select(`
+          *,
+          experiment_steps (*)
+        `)
+        .eq('id', id)
+        .single();
+
+      if (error) throw error;
+      return data;
+    } catch (error: any) {
+      toast.error('Failed to load experiment');
+      throw error;
+    }
+  };
+
+  const setCurrentExperiment = async (id: string) => {
+    const experiment = await getExperiment(id);
     if (experiment) {
       setCurrentExperimentState(experiment);
     }
   };
 
-  const completeStep = (experimentId: string, stepIndex: number) => {
-    setExperiments(
-      experiments.map((exp) => {
-        if (exp.id === experimentId) {
-          const updatedSteps = [...exp.steps];
-          updatedSteps[stepIndex] = {
-            ...updatedSteps[stepIndex],
-            completed: true,
-            completedAt: new Date().toISOString(),
-          };
-          
-          return {
-            ...exp,
-            steps: updatedSteps,
-            progress: Math.round(
-              (updatedSteps.filter((step) => step.completed).length / updatedSteps.length) * 100
-            ),
-          };
-        }
-        return exp;
-      })
-    );
-    
-    // Update current experiment if it's the one being modified
-    if (currentExperiment?.id === experimentId) {
-      const updatedSteps = [...currentExperiment.steps];
-      updatedSteps[stepIndex] = {
-        ...updatedSteps[stepIndex],
-        completed: true,
-        completedAt: new Date().toISOString(),
-      };
-      
-      setCurrentExperimentState({
-        ...currentExperiment,
-        steps: updatedSteps,
-        progress: Math.round(
-          (updatedSteps.filter((step) => step.completed).length / updatedSteps.length) * 100
-        ),
-      });
+  const completeStep = async (experimentId: string, stepIndex: number) => {
+    try {
+      const experiment = await getExperiment(experimentId);
+      if (!experiment) throw new Error('Experiment not found');
+
+      const step = experiment.experiment_steps[stepIndex];
+      if (!step) throw new Error('Step not found');
+
+      // Update step
+      const { error: stepError } = await supabase
+        .from('experiment_steps')
+        .update({
+          completed: true,
+          completed_at: new Date().toISOString()
+        })
+        .eq('id', step.id);
+
+      if (stepError) throw stepError;
+
+      // Update experiment progress
+      const completedSteps = experiment.experiment_steps.filter(s => s.completed).length + 1;
+      const progress = Math.round((completedSteps / experiment.experiment_steps.length) * 100);
+
+      const { error: experimentError } = await supabase
+        .from('experiments')
+        .update({ progress })
+        .eq('id', experimentId);
+
+      if (experimentError) throw experimentError;
+
+      await loadExperiments();
+    } catch (error: any) {
+      toast.error('Failed to complete step');
+      throw error;
     }
   };
 
-  const deleteExperiment = (id: string) => {
-    setExperiments(experiments.filter((exp) => exp.id !== id));
-    
-    // Reset current experiment if it's the one being deleted
-    if (currentExperiment?.id === id) {
-      setCurrentExperimentState(null);
+  const deleteExperiment = async (id: string) => {
+    try {
+      const { error } = await supabase
+        .from('experiments')
+        .delete()
+        .eq('id', id);
+
+      if (error) throw error;
+
+      await loadExperiments();
+      if (currentExperiment?.id === id) {
+        setCurrentExperimentState(null);
+      }
+    } catch (error: any) {
+      toast.error('Failed to delete experiment');
+      throw error;
     }
   };
 
@@ -119,6 +196,7 @@ export const ExperimentProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         setCurrentExperiment,
         completeStep,
         deleteExperiment,
+        loading
       }}
     >
       {children}

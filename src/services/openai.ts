@@ -9,14 +9,17 @@ const openai = new OpenAI({
 export async function extractProtocolSteps(protocolText: string): Promise<ExtractedProtocol> {
   try {
     const response = await openai.chat.completions.create({
-      model: "gpt-3.5-turbo",
+      model: "gpt-4o",
       messages: [
         {
           role: "system",
           content: `You are a laboratory assistant that extracts experimental protocols into structured steps. 
-          Parse the protocol into a title, description, and a series of steps with estimated durations in minutes.
+          Parse the protocol into a title, description, and a series of steps with estimated time when the step is completed.
           Focus on laboratory procedures, especially those involving cell cultures and biological experiments.
-          For each step, try to estimate a realistic duration based on common lab practices.`
+          For each step, try to estimate a realistic duration based on common lab practices. The steps could include
+          "change the culture the cells are in" with a time stamp of 9pm. These steps should resemble realistic lab procedures.
+          They should also be reproducible and followable by a lab technician. Make sure to include sufficient detail in each step,
+          including equipment and materials used and process details.`
         },
         {
           role: "user",
